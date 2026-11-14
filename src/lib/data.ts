@@ -3,11 +3,9 @@ import {
   collection, 
   query, 
   where, 
-  orderBy, 
   getDocs, 
   doc, 
   getDoc,
-  setDoc,
   addDoc,
   updateDoc,
   deleteDoc
@@ -70,13 +68,18 @@ export const subjectsQuery = queryOptions({
   queryFn: async (): Promise<Subject[]> => {
     const user = auth.currentUser;
     if (!user) return [];
-    const q = query(collection(db, "subjects"), where("user_id", "==", user.uid));
-    const snap = await getDocs(q);
-    const list: Subject[] = [];
-    snap.forEach((d) => {
-      list.push({ id: d.id, ...d.data() } as Subject);
-    });
-    return list.sort((a, b) => a.name.localeCompare(b.name));
+    try {
+      const q = query(collection(db, "subjects"), where("user_id", "==", user.uid));
+      const snap = await getDocs(q);
+      const list: Subject[] = [];
+      snap.forEach((d) => {
+        list.push({ id: d.id, ...d.data() } as Subject);
+      });
+      return list.sort((a, b) => a.name.localeCompare(b.name));
+    } catch (e) {
+      console.error("subjectsQuery error:", e);
+      return [];
+    }
   },
 });
 
@@ -85,17 +88,22 @@ export const tasksQuery = queryOptions({
   queryFn: async (): Promise<Task[]> => {
     const user = auth.currentUser;
     if (!user) return [];
-    const q = query(collection(db, "tasks"), where("user_id", "==", user.uid));
-    const snap = await getDocs(q);
-    const list: Task[] = [];
-    snap.forEach((d) => {
-      list.push({ id: d.id, ...d.data() } as Task);
-    });
-    return list.sort((a, b) => {
-      if (!a.due_at) return 1;
-      if (!b.due_at) return -1;
-      return new Date(a.due_at).getTime() - new Date(b.due_at).getTime();
-    });
+    try {
+      const q = query(collection(db, "tasks"), where("user_id", "==", user.uid));
+      const snap = await getDocs(q);
+      const list: Task[] = [];
+      snap.forEach((d) => {
+        list.push({ id: d.id, ...d.data() } as Task);
+      });
+      return list.sort((a, b) => {
+        if (!a.due_at) return 1;
+        if (!b.due_at) return -1;
+        return new Date(a.due_at).getTime() - new Date(b.due_at).getTime();
+      });
+    } catch (e) {
+      console.error("tasksQuery error:", e);
+      return [];
+    }
   },
 });
 
@@ -104,13 +112,18 @@ export const calendarEventsQuery = queryOptions({
   queryFn: async (): Promise<CalendarEvent[]> => {
     const user = auth.currentUser;
     if (!user) return [];
-    const q = query(collection(db, "calendar_events"), where("user_id", "==", user.uid));
-    const snap = await getDocs(q);
-    const list: CalendarEvent[] = [];
-    snap.forEach((d) => {
-      list.push({ id: d.id, ...d.data() } as CalendarEvent);
-    });
-    return list.sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
+    try {
+      const q = query(collection(db, "calendar_events"), where("user_id", "==", user.uid));
+      const snap = await getDocs(q);
+      const list: CalendarEvent[] = [];
+      snap.forEach((d) => {
+        list.push({ id: d.id, ...d.data() } as CalendarEvent);
+      });
+      return list.sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime());
+    } catch (e) {
+      console.error("calendarEventsQuery error:", e);
+      return [];
+    }
   },
 });
 
@@ -119,19 +132,33 @@ export const meQuery = queryOptions({
   queryFn: async () => {
     const user = auth.currentUser;
     if (!user) return null;
-    const snap = await getDoc(doc(db, "profiles", user.uid));
-    const profile = snap.exists() ? snap.data() : null;
-    const role = (profile as any)?.role || "user";
-    return {
-      user: {
-        id: user.uid,
-        email: user.email,
-        displayName: user.displayName,
-      },
-      profile,
-      roles: [role],
-      isAdmin: role === "super_admin" || role === "admin",
-    };
+    try {
+      const snap = await getDoc(doc(db, "profiles", user.uid));
+      const profile = snap.exists() ? snap.data() : null;
+      const role = (profile as any)?.role || "user";
+      return {
+        user: {
+          id: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+        },
+        profile,
+        roles: [role],
+        isAdmin: role === "super_admin" || role === "admin",
+      };
+    } catch (e) {
+      console.error("meQuery error:", e);
+      return {
+        user: {
+          id: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+        },
+        profile: null,
+        roles: ["user"],
+        isAdmin: false,
+      };
+    }
   },
 });
 
