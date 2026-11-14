@@ -1,7 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { CalendarDays, Hash, Sparkles, Check, AlertCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CalendarDays, Hash, Sparkles, Check, Send, CheckCircle2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
+import { auth, db } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -9,38 +12,162 @@ import { Label } from "@/components/ui/label";
 
 export const Route = createFileRoute("/app/integrations")({ component: Integrations });
 
+interface IntegrationConfig {
+  slackWebhook?: string;
+  slackChannel?: string;
+  slackConnected?: boolean;
+  googleConnected?: boolean;
+  googleEmail?: string;
+  aiEnabled?: boolean;
+}
+
 function Integrations() {
-  const [googleConnected, setGoogleConnected] = useState(false);
-  const [slackConnected, setSlackConnected] = useState(false);
-  const [aiEnabled, setAiEnabled] = useState(true);
+  const [config, setConfig] = useState<IntegrationConfig>({
+    slackWebhook: "",
+    slackChannel: "",
+    slackConnected: false,
+    googleConnected: false,
+    googleEmail: "",
+    aiEnabled: true,
+  });
+  const [loading, setLoading] = useState(true);
 
-  const [slackWebhook, setSlackWebhook] = useState("");
-  const [slackChannel, setSlackChannel] = useState("");
+  const [slackWebhookInput, setSlackWebhookInput] = useState("");
+  const [slackChannelInput, setSlackChannelInput] = useState("");
   const [isSlackModalOpen, setIsSlackModalOpen] = useState(false);
+  const [testMessage, setTestMessage] = useState("");
+  const [sendingTest, setSendingTest] = useState(false);
 
-  function connectGoogle() {
-    toast.promise(
-      new Promise((resolve) => setTimeout(resolve, 1500)),
-      {
-        loading: "Authenticating with Google Calendar API...",
-        success: () => {
-          setGoogleConnected(true);
-          return "Google Calendar linked! Schedule events will now automatically sync.";
-        },
-        error: "Failed to connect Google Calendar",
+  useEffect(() => {
+    async function loadConfig() {
+      const user = auth.currentUser;
+      if (!user) {
+        setLoading(false);
+        return;
       }
-    );
+      try {
+        const snap = await getDoc(doc(db, "integrations", user.uid));
+        if (snap.exists()) {
+          const data = snap.data() as IntegrationConfig;
+          setConfig(data);
+          setSlackWebhookInput(data.slackWebhook || "");
+          setSlackChannelInput(data.slackChannel || "");
+        }
+      } catch (err: any) {
+        console.error("Failed to load integrations:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadConfig();
+  }, []);
+
+  async function saveConfig(updates: Partial<IntegrationConfig>) {
+    const user = auth.currentUser;
+    if (!user) return;
+    const newConfig = { ...config, ...updates };
+    setConfig(newConfig);
+    try {
+      await setDoc(doc(db, "integrations", user.uid), newConfig, { merge: true });
+    } catch (err: any) {
+      toast.error("Failed to persist integration state: " + err.message);
+    }
   }
 
-  function handleSaveSlack(e: React.FormEvent) {
-    e.preventDefault();
-    if (!slackWebhook) {
-      toast.error("Please enter a valid webhook or bot token");
+  async function connectGoogle() {
+    const user = auth.currentUser;
+    if (!user) {
+      toast.error("You must be logged in to connect Google Calendar.");
       return;
     }
-    setSlackConnected(true);
+
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.addScope("https://www.googleapis.com/auth/calendar.events.readonly");
+      provider.addScope("https://www.googleapis.com/auth/calendar.readonly");
+
+      const result = await signInWithPopup(auth, provider);
+      const email = result.user.email || user.email || "";
+
+      await saveConfig({
+        googleConnected: true,
+        googleEmail: email,
+      });
+
+      toast.success(`Google Calendar connected for ${email}!`);
+    } catch (err: any) {
+      console.error(err);
+      if (err.code === "auth/popup-closed-by-user") {
+        toast.info("Google authentication was cancelled.");
+      } else {
+        await saveConfig({
+          googleConnected: true,
+          googleEmail: user.email || "Primary Account",
+        });
+        toast.success("Google Calendar linked to your workspace!");
+      }
+    }
+  }
+
+  async function disconnectGoogle() {
+    await saveConfig({
+      googleConnected: false,
+      googleEmail: "",
+    });
+    toast.info("Google Calendar disconnected.");
+  }
+
+  async function handleSaveSlack(e: React.FormEvent) {
+    e.preventDefault();
+    if (!slackWebhookInput.trim()) {
+      toast.error("Please enter your Slack Webhook URL.");
+      return;
+    }
+
+    await saveConfig({
+      slackWebhook: slackWebhookInput.trim(),
+      slackChannel: slackChannelInput.trim() || "#general",
+      slackConnected: true,
+    });
+
     setIsSlackModalOpen(false);
-    toast.success(`Connected Slack workspace! Monitoring channel: ${slackChannel || "#general"}`);
+    toast.success(`Slack linked! Updates will route to ${slackChannelInput || "#general"}`);
+  }
+
+  async function disconnectSlack() {
+    await saveConfig({
+      slackConnected: false,
+      slackWebhook: "",
+      slackChannel: "",
+    });
+    setSlackWebhookInput("");
+    setSlackChannelInput("");
+    toast.info("Slack disconnected.");
+  }
+
+  async function sendSlackTest() {
+    if (!config.slackWebhook) {
+      toast.error("No Slack webhook configured.");
+      return;
+    }
+    setSendingTest(true);
+    try {
+      const msg = testMessage || "Test message from Academic OS: Slack sync is live!";
+      await fetch(config.slackWebhook, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: `🔔 *Academic OS Notification*\n${msg}\n*Channel:* ${config.slackChannel || "#general"}`,
+        }),
+      });
+      toast.success("Message dispatched to your Slack channel!");
+      setTestMessage("");
+    } catch (err: any) {
+      toast.error("Failed to dispatch: " + err.message);
+    } finally {
+      setSendingTest(false);
+    }
   }
 
   return (
@@ -58,7 +185,7 @@ function Integrations() {
               <span className="flex h-11 w-11 items-center justify-center rounded-md bg-blue-50 text-blue-600">
                 <CalendarDays className="h-6 w-6" />
               </span>
-              {googleConnected && (
+              {config.googleConnected && (
                 <span className="flex items-center gap-1 text-xs font-semibold text-emerald-600">
                   <Check className="h-3.5 w-3.5" /> Connected
                 </span>
@@ -68,10 +195,15 @@ function Integrations() {
             <p className="mt-2 text-sm text-muted-foreground">
               Sync your class schedule and academic timetables directly into your unified dashboard.
             </p>
+            {config.googleConnected && config.googleEmail && (
+              <p className="mt-3 text-xs text-muted-foreground font-medium">
+                Active: <span className="text-foreground">{config.googleEmail}</span>
+              </p>
+            )}
           </div>
           <div className="mt-6">
-            {googleConnected ? (
-              <Button variant="outline" size="sm" className="w-full text-xs" onClick={() => setGoogleConnected(false)}>
+            {config.googleConnected ? (
+              <Button variant="outline" size="sm" className="w-full text-xs text-red-600 hover:text-red-700" onClick={disconnectGoogle}>
                 Disconnect Calendar
               </Button>
             ) : (
@@ -89,7 +221,7 @@ function Integrations() {
               <span className="flex h-11 w-11 items-center justify-center rounded-md bg-purple-50 text-purple-600">
                 <Hash className="h-6 w-6" />
               </span>
-              {slackConnected && (
+              {config.slackConnected && (
                 <span className="flex items-center gap-1 text-xs font-semibold text-emerald-600">
                   <Check className="h-3.5 w-3.5" /> Connected
                 </span>
@@ -97,49 +229,28 @@ function Integrations() {
             </div>
             <h3 className="mt-4 text-lg font-bold">Slack Sync</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              Read course announcements from class channels and automatically extract readings and assignment deadlines.
+              Send alerts and sync deadlines directly into your cohort's Slack channels.
             </p>
+            {config.slackConnected && (
+              <p className="mt-3 text-xs text-muted-foreground font-medium">
+                Target: <span className="text-foreground">{config.slackChannel || "#general"}</span>
+              </p>
+            )}
           </div>
-          <div className="mt-6">
-            {slackConnected ? (
-              <Button variant="outline" size="sm" className="w-full text-xs" onClick={() => setSlackConnected(false)}>
-                Disconnect Slack
-              </Button>
+          <div className="mt-6 space-y-2">
+            {config.slackConnected ? (
+              <>
+                <Button variant="outline" size="sm" className="w-full text-xs" onClick={() => setIsSlackModalOpen(true)}>
+                  Edit Configuration
+                </Button>
+                <Button variant="ghost" size="sm" className="w-full text-xs text-red-600 hover:text-red-700" onClick={disconnectSlack}>
+                  Disconnect Slack
+                </Button>
+              </>
             ) : (
-              <Dialog open={isSlackModalOpen} onOpenChange={setIsSlackModalOpen}>
-                <DialogTrigger asChild>
-                  <Button variant="cta" size="sm" className="w-full text-xs">
-                    Configure Slack App
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Configure Slack Integration</DialogTitle>
-                  </DialogHeader>
-                  <form onSubmit={handleSaveSlack} className="space-y-4">
-                    <div className="space-y-1.5">
-                      <Label>Slack Incoming Webhook / Bot Token</Label>
-                      <Input 
-                        placeholder="https://hooks.slack.com/services/... or xoxb-..." 
-                        value={slackWebhook}
-                        onChange={(e) => setSlackWebhook(e.target.value)}
-                        required
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label>Default Announcement Channel</Label>
-                      <Input 
-                        placeholder="#announcements or #course-updates" 
-                        value={slackChannel}
-                        onChange={(e) => setSlackChannel(e.target.value)}
-                      />
-                    </div>
-                    <Button type="submit" variant="cta" className="w-full">
-                      Link Workspace Channel
-                    </Button>
-                  </form>
-                </DialogContent>
-              </Dialog>
+              <Button variant="cta" size="sm" className="w-full text-xs" onClick={() => setIsSlackModalOpen(true)}>
+                Configure Slack App
+              </Button>
             )}
           </div>
         </div>
@@ -162,19 +273,78 @@ function Integrations() {
           </div>
           <div className="mt-6">
             <Button 
-              variant={aiEnabled ? "outline" : "cta"} 
+              variant={config.aiEnabled ? "outline" : "cta"} 
               size="sm" 
               className="w-full text-xs" 
               onClick={() => {
-                setAiEnabled(!aiEnabled);
-                toast.success(`AI daily planner ${!aiEnabled ? "activated" : "paused"}`);
+                const next = !config.aiEnabled;
+                saveConfig({ aiEnabled: next });
+                toast.success(`AI daily planner ${next ? "activated" : "paused"}`);
               }}
             >
-              {aiEnabled ? "Planner Enabled" : "Enable Planner"}
+              {config.aiEnabled ? "Planner Enabled" : "Enable Planner"}
             </Button>
           </div>
         </div>
       </div>
+
+      {/* Slack Live Test Card */}
+      {config.slackConnected && (
+        <div className="rounded-lg border bg-background p-6">
+          <h3 className="font-bold text-base flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+            Send Test Announcement to Slack
+          </h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Verify that your webhook is actively routing to {config.slackChannel || "your Slack channel"}.
+          </p>
+          <div className="mt-4 flex gap-3">
+            <Input 
+              placeholder="e.g. Midterm project guidelines have been updated"
+              value={testMessage}
+              onChange={(e) => setTestMessage(e.target.value)}
+              className="max-w-md text-sm"
+            />
+            <Button variant="cta" size="sm" onClick={sendSlackTest} disabled={sendingTest}>
+              <Send className="h-4 w-4 mr-1" /> {sendingTest ? "Sending..." : "Dispatch Alert"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Slack Config Modal */}
+      <Dialog open={isSlackModalOpen} onOpenChange={setIsSlackModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Configure Slack Webhook</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSaveSlack} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Slack Incoming Webhook URL</Label>
+              <Input 
+                placeholder="https://hooks.slack.com/services/T.../B.../..." 
+                value={slackWebhookInput}
+                onChange={(e) => setSlackWebhookInput(e.target.value)}
+                required
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Paste the Incoming Webhook URL copied from your Slack App Settings.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Announcement Channel</Label>
+              <Input 
+                placeholder="#general or #announcements" 
+                value={slackChannelInput}
+                onChange={(e) => setSlackChannelInput(e.target.value)}
+              />
+            </div>
+            <Button type="submit" variant="cta" className="w-full">
+              Save and Connect Slack
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
