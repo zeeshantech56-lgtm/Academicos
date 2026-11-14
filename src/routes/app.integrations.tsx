@@ -7,8 +7,7 @@ import {
   Check, 
   RefreshCw, 
   Zap, 
-  CheckCircle2, 
-  AlertCircle 
+  CheckCircle2 
 } from "lucide-react";
 import { toast } from "sonner";
 import { doc, getDoc, setDoc } from "firebase/firestore";
@@ -141,11 +140,11 @@ function Integrations() {
       toast.success(`Google Calendar connected for ${email}!`);
 
       if (accessToken) {
-        toast.loading("Fetching live events from your Google Calendar...");
+        toast.loading("Fetching your classes and schedule from Google Calendar...");
         try {
-          const count = await syncRealGoogleCalendar(accessToken);
+          const res = await syncRealGoogleCalendar(accessToken);
           toast.dismiss();
-          toast.success(`Successfully imported ${count} events from your Google Calendar!`);
+          toast.success(`Imported ${res.events} calendar events and ${res.tasks} academic tasks!`);
         } catch (calErr: any) {
           toast.dismiss();
           toast.error("Google Calendar fetch error: " + calErr.message);
@@ -189,15 +188,15 @@ function Integrations() {
     });
 
     setIsSlackModalOpen(false);
-    toast.loading("Fetching real channels and reading messages from your Slack workspace...");
+    toast.loading("Importing Slack channels as Subjects & scanning messages...");
 
     try {
       const res = await syncRealSlack(token);
       toast.dismiss();
-      toast.success(`Done! Imported ${res.subjects} channels as Subjects and ${res.tasks} assignments/readings directly from Slack.`);
+      toast.success(`Done! Imported ${res.subjects} courses as Subjects and ${res.tasks} assignments/readings directly from Slack.`);
     } catch (err: any) {
       toast.dismiss();
-      toast.error("Slack sync failed: " + err.message);
+      toast.error("Slack sync error: " + err.message);
     }
   }
 
@@ -217,27 +216,14 @@ function Integrations() {
 
     let summaryParts: string[] = [];
 
-    // 1. Sync real Google Calendar
-    if (config.googleConnected) {
-      if (config.googleAccessToken) {
-        try {
-          const gCount = await syncRealGoogleCalendar(config.googleAccessToken);
-          summaryParts.push(`${gCount} events from Google Calendar`);
-        } catch (e: any) {
-          toast.error("Google Calendar sync: " + e.message);
-        }
-      } else {
-        toast.info("Re-connect Google Calendar to refresh its OAuth token.");
-      }
-    } else {
-      toast.info("Google Calendar is not connected yet.");
-    }
-
-    // 2. Sync real Slack channels
+    // 1. Sync real Slack channels into Subjects and Tasks
     if (config.slackConnected && config.slackBotToken) {
       try {
         const sRes = await syncRealSlack(config.slackBotToken);
-        summaryParts.push(`${sRes.subjects} subjects and ${sRes.tasks} tasks from Slack`);
+        summaryParts.push(`${sRes.subjects} courses as Subjects`);
+        if (sRes.tasks > 0) {
+          summaryParts.push(`${sRes.tasks} tasks from Slack`);
+        }
       } catch (e: any) {
         toast.error("Slack sync: " + e.message);
       }
@@ -245,10 +231,29 @@ function Integrations() {
       toast.info("Slack is not connected yet. Add your Slack Bot Token to read channels.");
     }
 
+    // 2. Sync real Google Calendar into Schedule and Dashboard
+    if (config.googleConnected) {
+      if (config.googleAccessToken) {
+        try {
+          const gRes = await syncRealGoogleCalendar(config.googleAccessToken);
+          summaryParts.push(`${gRes.events} classes & events from Google Calendar`);
+          if (gRes.tasks > 0) {
+            summaryParts.push(`${gRes.tasks} readings/tasks`);
+          }
+        } catch (e: any) {
+          toast.error("Google Calendar sync: " + e.message);
+        }
+      } else {
+        toast.info("Click 'Connect Google Calendar' again to refresh your calendar token.");
+      }
+    } else {
+      toast.info("Google Calendar is not connected yet.");
+    }
+
     setSyncingAll(false);
 
     if (summaryParts.length > 0) {
-      const summary = `Live sync complete: Imported ${summaryParts.join(" and ")}.`;
+      const summary = `Live sync complete: Imported ${summaryParts.join(", ")}!`;
       setLastSyncResult(summary);
       toast.success(summary);
     }
@@ -259,7 +264,7 @@ function Integrations() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-extrabold">Integrations & Automations</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Direct API sync with your real Google Calendar events and real Slack workspace channels.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Direct sync connecting your real Slack channels (as Subjects) and Google Calendar events (as Schedule &amp; Tasks).</p>
         </div>
 
         <Button 
@@ -273,7 +278,7 @@ function Integrations() {
           ) : (
             <Zap className="h-4 w-4" />
           )}
-          {syncingAll ? "Reading Real Data..." : "Fetch Real Data from Google & Slack"}
+          {syncingAll ? "Syncing Real Data..." : "⚡ Sync All Real Slack & Calendar Data"}
         </Button>
       </div>
 
@@ -291,15 +296,15 @@ function Integrations() {
 
       {/* Info Card */}
       <div className="rounded-xl border bg-surface p-6 shadow-sm">
-        <h2 className="text-lg font-bold">How live sync works</h2>
+        <h2 className="text-lg font-bold">Cross-Platform Sync Rules</h2>
         <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
           <li className="flex items-start gap-2">
             <Check className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-            <span><strong>Google Calendar:</strong> Calls the Google Calendar API directly to read your upcoming classes, exams, and timetable events and stores them in your schedule.</span>
+            <span><strong>Slack Channels → Subjects:</strong> Channels like <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">consumer-behavior</code> and <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">business-finance</code> are automatically imported as formatted academic Subjects.</span>
           </li>
           <li className="flex items-start gap-2">
             <Check className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-            <span><strong>Slack Channels:</strong> Uses your Slack Bot Token (<code className="text-xs bg-muted px-1.5 py-0.5 rounded">xoxb-...</code>) to read your channels (e.g. course names) and messages for pre-reads and deadlines.</span>
+            <span><strong>Google Calendar → Schedule &amp; Readings:</strong> Classes like <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">Consumer Behavior</code> and <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">Design Thinking</code> appear in your timetable, and events like <code className="text-xs bg-muted px-1.5 py-0.5 rounded font-mono">Book Reading</code> automatically become items in your Readings &amp; Priorities!</span>
           </li>
         </ul>
       </div>
@@ -320,18 +325,37 @@ function Integrations() {
             </div>
             <h3 className="mt-4 text-lg font-bold">Google Calendar</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              Directly queries your primary Google Calendar and syncs your classes into Academic OS.
+              Directly queries your primary Google Calendar (Book Reading, Consumer Behavior, Design Thinking, etc.).
             </p>
             {config.googleConnected && (
               <p className="mt-3 text-xs text-muted-foreground font-medium">
-                Connected Google Account: <span className="text-foreground">{config.googleEmail || "Active"}</span>
+                Active: <span className="text-foreground">{config.googleEmail || "Connected"}</span>
               </p>
             )}
           </div>
           <div className="mt-6 flex gap-2">
             {config.googleConnected ? (
               <>
-                <Button variant="cta" size="sm" className="flex-1 text-xs" onClick={() => config.googleAccessToken && syncRealGoogleCalendar(config.googleAccessToken).then(n => toast.success(`Synced ${n} events!`))}>
+                <Button 
+                  variant="cta" 
+                  size="sm" 
+                  className="flex-1 text-xs" 
+                  onClick={async () => {
+                    if (config.googleAccessToken) {
+                      toast.loading("Fetching Google Calendar events...");
+                      try {
+                        const r = await syncRealGoogleCalendar(config.googleAccessToken);
+                        toast.dismiss();
+                        toast.success(`Imported ${r.events} schedule events & ${r.tasks} reading tasks!`);
+                      } catch (err: any) {
+                        toast.dismiss();
+                        toast.error("Fetch error: " + err.message);
+                      }
+                    } else {
+                      connectGoogle();
+                    }
+                  }}
+                >
                   Sync Events Now
                 </Button>
                 <Button variant="outline" size="sm" className="text-xs text-red-600 hover:text-red-700" onClick={disconnectGoogle}>
@@ -361,7 +385,7 @@ function Integrations() {
             </div>
             <h3 className="mt-4 text-lg font-bold">Slack Workspace</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              Fetches all channels from your real Slack workspace and extracts messages for pre-reads &amp; deadlines.
+              Fetches course channels from your real Crucible workspace and links them as Subjects.
             </p>
             {config.slackConnected && (
               <p className="mt-3 text-xs text-muted-foreground font-medium">
@@ -372,8 +396,25 @@ function Integrations() {
           <div className="mt-6 flex gap-2">
             {config.slackConnected ? (
               <>
-                <Button variant="cta" size="sm" className="flex-1 text-xs" onClick={() => config.slackBotToken && syncRealSlack(config.slackBotToken).then(r => toast.success(`Synced ${r.subjects} channels & ${r.tasks} tasks!`))}>
-                  Sync Slack Now
+                <Button 
+                  variant="cta" 
+                  size="sm" 
+                  className="flex-1 text-xs" 
+                  onClick={async () => {
+                    if (config.slackBotToken) {
+                      toast.loading("Fetching real channels from Slack...");
+                      try {
+                        const r = await syncRealSlack(config.slackBotToken);
+                        toast.dismiss();
+                        toast.success(`Imported ${r.subjects} channels as Subjects & ${r.tasks} tasks!`);
+                      } catch (err: any) {
+                        toast.dismiss();
+                        toast.error("Fetch error: " + err.message);
+                      }
+                    }
+                  }}
+                >
+                  Sync Slack Channels
                 </Button>
                 <Button variant="outline" size="sm" className="text-xs" onClick={() => setIsSlackModalOpen(true)}>
                   Change Token
@@ -407,7 +448,7 @@ function Integrations() {
                 required
               />
               <p className="text-[12px] text-muted-foreground mt-1">
-                To read your real channels: In your Slack App settings, go to <strong>OAuth &amp; Permissions</strong>, install the app to your workspace, and copy the <strong>Bot User OAuth Token</strong> (starts with <code className="text-xs bg-muted px-1 rounded">xoxb-</code>).
+                Your Bot User OAuth Token starts with <code className="text-xs bg-muted px-1 rounded">xoxb-</code>.
               </p>
             </div>
             <Button type="submit" variant="cta" className="w-full">
