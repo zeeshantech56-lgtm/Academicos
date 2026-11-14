@@ -91,7 +91,7 @@ export function parseAcademicMessage(text: string): {
 // REAL Google Calendar Fetch: Fetches actual events from the authenticated user's Google Calendar account
 export async function syncRealGoogleCalendar(accessToken: string): Promise<number> {
   const user = auth.currentUser;
-  if (!user) throw new Error("Please log in first");
+  if (!user) throw new Error("User not authenticated");
   if (!accessToken) throw new Error("Google access token missing. Please click 'Connect Google Calendar' first.");
 
   const timeMin = new Date().toISOString();
@@ -169,6 +169,25 @@ export async function syncRealGoogleCalendar(accessToken: string): Promise<numbe
   return added;
 }
 
+// Call Slack API safely (using serverless proxy to prevent browser CORS blocks)
+async function callSlackApi(endpoint: string, token: string, params: Record<string, any> = {}) {
+  const res = await fetch("/api/slack-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint, token, params }),
+  });
+  if (!res.ok) {
+    // If running in local dev where serverless route is not spun up, try direct fetch
+    const url = new URL(`https://slack.com/api/${endpoint}`);
+    Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, String(v)));
+    const direct = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return await direct.json();
+  }
+  return await res.json();
+}
+
 // REAL Slack Sync: Reads real channels and real messages using Slack Bot User Token
 export async function syncRealSlack(botToken: string): Promise<{ subjects: number; tasks: number }> {
   const user = auth.currentUser;
@@ -177,11 +196,11 @@ export async function syncRealSlack(botToken: string): Promise<{ subjects: numbe
     throw new Error("A valid Slack Bot User Token (starting with xoxb-) is required to read your Slack channels and messages.");
   }
 
-  // 1. Fetch real channel list
-  const listRes = await fetch("https://slack.com/api/conversations.list?types=public_channel,private_channel", {
-    headers: { Authorization: `Bearer ${botToken}` }
+  // 1. Fetch real channel list via backend proxy
+  const listData = await callSlackApi("conversations.list", botToken, {
+    types: "public_channel,private_channel",
   });
-  const listData = await listRes.json();
+
   if (!listData.ok) {
     throw new Error(`Slack API error: ${listData.error || "Unable to list channels"}`);
   }
@@ -204,7 +223,7 @@ export async function syncRealSlack(botToken: string): Promise<{ subjects: numbe
   // 2. Map channels to subjects and fetch messages
   for (const ch of (listData.channels || [])) {
     if (ch.is_archived) continue;
-    // Format channel name (e.g. "corp-finance" -> "Corp Finance")
+    // Format channel name (e.g. "managerial-communication" -> "Managerial Communication")
     const channelName = ch.name.replace(/[-_]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
     let subjectId = subjectMap.get(channelName.toLowerCase());
 
@@ -225,19 +244,21 @@ export async function syncRealSlack(botToken: string): Promise<{ subjects: numbe
 
     // 3. Fetch real messages from this channel
     try {
-      const histRes = await fetch(`https://slack.com/api/conversations.history?channel=${ch.id}&limit=20`, {
-        headers: { Authorization: `Bearer ${botToken}` }
+      const histData = await callSlackApi("conversations.history", botToken, {
+        channel: ch.id,
+        limit: 20,
       });
-      const histData = await histRes.json();
+
       if (histData.ok && Array.isArray(histData.messages)) {
         for (const msg of histData.messages) {
           if (!msg.text || msg.subtype) continue;
           
-          // Only create items for messages that discuss coursework, readings, pre-reads, assignments, or deadlines
+          // Identify messages that contain study tasks, readings, pre-reads, assignments, or deadlines
           const lower = msg.text.toLowerCase();
           const isAcademic = lower.includes("read") || lower.includes("assignment") || lower.includes("submission") || 
                              lower.includes("due") || lower.includes("homework") || lower.includes("exam") || 
-                             lower.includes("case") || lower.includes("problem set") || lower.includes("project");
+                             lower.includes("case") || lower.includes("problem set") || lower.includes("project") ||
+                             lower.includes("presentation") || lower.includes("quiz");
           
           if (!isAcademic) continue;
 
