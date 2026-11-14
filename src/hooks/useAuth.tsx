@@ -14,6 +14,11 @@ export interface UserProfile {
   updated_at?: string;
 }
 
+const ADMIN_EMAILS = [
+  "zeeshantech56@gmail.com",
+  "zeeshan@crucible.institute",
+];
+
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -24,10 +29,16 @@ export function useAuth() {
       setUser(currentUser);
       if (currentUser) {
         try {
+          const isMasterAdmin = ADMIN_EMAILS.includes(currentUser.email?.toLowerCase() || "");
           const ref = doc(db, "profiles", currentUser.uid);
           const snap = await getDoc(ref);
           if (snap.exists()) {
-            setProfile(snap.data() as UserProfile);
+            const currentProfile = snap.data() as UserProfile;
+            if (isMasterAdmin && currentProfile.role !== "super_admin") {
+              await setDoc(ref, { role: "super_admin" }, { merge: true });
+              currentProfile.role = "super_admin";
+            }
+            setProfile(currentProfile);
           } else {
             const initial: UserProfile = {
               id: currentUser.uid,
@@ -35,7 +46,7 @@ export function useAuth() {
               full_name: currentUser.displayName || "",
               institution: "",
               programme: "",
-              role: currentUser.email === "zeeshantech56@gmail.com" ? "super_admin" : "user",
+              role: isMasterAdmin ? "super_admin" : "user",
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             };

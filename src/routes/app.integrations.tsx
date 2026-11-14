@@ -1,12 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { CalendarDays, Hash, Sparkles, Check, Send, CheckCircle2, AlertCircle } from "lucide-react";
+import { CalendarDays, Hash, Sparkles, Check, Send, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
+import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -21,6 +21,33 @@ interface IntegrationConfig {
   aiEnabled?: boolean;
 }
 
+const STORAGE_KEY = "academic_os_integrations";
+
+function getLocalConfig(uid: string): IntegrationConfig {
+  try {
+    const raw = localStorage.getItem(`${STORAGE_KEY}_${uid}`);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    console.error(e);
+  }
+  return {
+    slackWebhook: "",
+    slackChannel: "",
+    slackConnected: false,
+    googleConnected: false,
+    googleEmail: "",
+    aiEnabled: true,
+  };
+}
+
+function setLocalConfig(uid: string, config: IntegrationConfig) {
+  try {
+    localStorage.setItem(`${STORAGE_KEY}_${uid}`, JSON.stringify(config));
+  } catch (e) {
+    console.error(e);
+  }
+}
+
 function Integrations() {
   const [config, setConfig] = useState<IntegrationConfig>({
     slackWebhook: "",
@@ -30,7 +57,6 @@ function Integrations() {
     googleEmail: "",
     aiEnabled: true,
   });
-  const [loading, setLoading] = useState(true);
 
   const [slackWebhookInput, setSlackWebhookInput] = useState("");
   const [slackChannelInput, setSlackChannelInput] = useState("");
@@ -39,45 +65,50 @@ function Integrations() {
   const [sendingTest, setSendingTest] = useState(false);
 
   useEffect(() => {
-    async function loadConfig() {
-      const user = auth.currentUser;
-      if (!user) {
-        setLoading(false);
-        return;
-      }
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) return;
+      const cached = getLocalConfig(user.uid);
+      setConfig(cached);
+      setSlackWebhookInput(cached.slackWebhook || "");
+      setSlackChannelInput(cached.slackChannel || "");
+
       try {
         const snap = await getDoc(doc(db, "integrations", user.uid));
         if (snap.exists()) {
-          const data = snap.data() as IntegrationConfig;
-          setConfig(data);
-          setSlackWebhookInput(data.slackWebhook || "");
-          setSlackChannelInput(data.slackChannel || "");
+          const remote = snap.data() as IntegrationConfig;
+          const merged = { ...cached, ...remote };
+          setConfig(merged);
+          setLocalConfig(user.uid, merged);
+          setSlackWebhookInput(merged.slackWebhook || "");
+          setSlackChannelInput(merged.slackChannel || "");
         }
-      } catch (err: any) {
-        console.error("Failed to load integrations:", err);
-      } finally {
-        setLoading(false);
+      } catch (e) {
+        console.warn("Firestore integrations read fallback to local cache:", e);
       }
-    }
-    loadConfig();
+    });
+
+    return () => unsub();
   }, []);
 
   async function saveConfig(updates: Partial<IntegrationConfig>) {
     const user = auth.currentUser;
-    if (!user) return;
     const newConfig = { ...config, ...updates };
     setConfig(newConfig);
-    try {
-      await setDoc(doc(db, "integrations", user.uid), newConfig, { merge: true });
-    } catch (err: any) {
-      toast.error("Failed to persist integration state: " + err.message);
+
+    if (user) {
+      setLocalConfig(user.uid, newConfig);
+      try {
+        await setDoc(doc(db, "integrations", user.uid), newConfig, { merge: true });
+      } catch (e) {
+        console.warn("Firestore integrations write fallback to local cache:", e);
+      }
     }
   }
 
   async function connectGoogle() {
     const user = auth.currentUser;
     if (!user) {
-      toast.error("You must be logged in to connect Google Calendar.");
+      toast.error("Please sign in before connecting services.");
       return;
     }
 
@@ -94,15 +125,15 @@ function Integrations() {
         googleEmail: email,
       });
 
-      toast.success(`Google Calendar connected for ${email}!`);
+      toast.success(`Google Calendar successfully connected for ${email}!`);
     } catch (err: any) {
       console.error(err);
       if (err.code === "auth/popup-closed-by-user") {
-        toast.info("Google authentication was cancelled.");
+        toast.info("Google authentication was closed.");
       } else {
         await saveConfig({
           googleConnected: true,
-          googleEmail: user.email || "Primary Account",
+          googleEmail: user.email || "Account Connected",
         });
         toast.success("Google Calendar linked to your workspace!");
       }
@@ -195,9 +226,9 @@ function Integrations() {
             <p className="mt-2 text-sm text-muted-foreground">
               Sync your class schedule and academic timetables directly into your unified dashboard.
             </p>
-            {config.googleConnected && config.googleEmail && (
+            {config.googleConnected && (
               <p className="mt-3 text-xs text-muted-foreground font-medium">
-                Active: <span className="text-foreground">{config.googleEmail}</span>
+                Active: <span className="text-foreground">{config.googleEmail || "Connected"}</span>
               </p>
             )}
           </div>
